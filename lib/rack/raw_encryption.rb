@@ -3,8 +3,6 @@ require 'openssl'
 module Rack
   class RawEncryption
 
-    VERSION = '0.0.1'
-
     def initialize(app, opts = {})
       @app = app
       @upload_paths = Array(opts[:upload_paths])
