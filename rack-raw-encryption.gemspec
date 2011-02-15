@@ -23,6 +23,7 @@ Gem::Specification.new do |s|
     "Readme.md",
     "VERSION",
     "lib/rack/raw_encryption.rb",
+    "rack-raw-encryption.gemspec",
     "test/raw_encryption_test.rb"
   ]
   s.homepage = %q{https://github.com/lowentropy/rack-raw-encryption}
