@@ -44,11 +44,13 @@ module Rack
     end
     
     def replace_input!(env)
-      input = env['rack.input']
-      env['rack.input'], output = IO.pipe
-      encryptor = Processor.new :encrypt, encryption_key(env), input, output
-      Thread.new(encryptor) do |enc|
-        encryptor.run!
+      if key = encryption_key(env)
+        input = env['rack.input']
+        env['rack.input'], output = IO.pipe
+        encryptor = Processor.new :encrypt, key, input, output
+        Thread.new(encryptor) do |enc|
+          encryptor.run!
+        end
       end
     end
 
@@ -64,7 +66,9 @@ module Rack
     end
     
     def encryption_key(env)
-      Digest::SHA256.digest env['HTTP_X_ENCRYPTION_KEY']
+      if key = env['HTTP_X_ENCRYPTION_KEY']
+        Digest::SHA256.digest key
+      end
     end
 
     def literal_path_match?(request_path, candidate)
