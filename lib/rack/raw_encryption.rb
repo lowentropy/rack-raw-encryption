@@ -12,11 +12,10 @@ module Rack
 
     def call(env)
       thread = replace_input!(env) if encrypted_upload?(env)
-      @app.call(env).tap do |arr|
-        status, headers, body = arr
-        arr[-1] = decrypt!(env, body) if decrypted_download?(env)
-        thread.join if thread
-      end
+      status, headers, body = @app.call(env)
+      body = decrypt!(env, body)   if decrypted_download?(env)
+      thread.join if thread
+      [status, headers, body]
     end
 
     private
@@ -48,31 +47,21 @@ module Rack
       if key = encryption_key(env)
         input = env['rack.input']
         env['rack.input'], output = IO.pipe
-        encryptor = Processor.new :encrypt, key, input, output
-        Thread.new(encryptor) do |enc|
-          encryptor.run!
-        end
+        enc = Encrypter.new key, input, output
+        Thread.new { enc.run! }
       end
     end
 
     def decrypt!(env, body)
       if key = encryption_key(env)
-        [].tap do |new_body|
-          decryptor = Processor.new :decrypt, key
-          body.each do |part|
-            new_body << decryptor.update(part)
-          end
-          new_body << decryptor.final
-        end
+        DecryptedBody.new key, body
       else
         body
       end
     end
     
     def get_key_from_env(env)
-      req = Rack::Request.new(env)
-      env['HTTP_X_ENCRYPTION_KEY'] ||
-      req.params['encryption_key']
+      env['HTTP_X_ENCRYPTION_KEY'] || Rack::Request.new(env).params['encryption_key']
     end
 
     def encryption_key(env)
@@ -92,9 +81,23 @@ module Rack
     end
     
     class Processor
-      attr_reader :input, :output, :aes, :chunk_size
-      def initialize(method, key, input = nil, output = nil, opts = {})
+      attr_reader :aes
+      def initialize(method, key)
         @aes = construct_aes method, key
+      end
+      private
+      def construct_aes(method, key)
+        OpenSSL::Cipher::Cipher.new('aes-256-cbc').tap do |aes|
+          aes.send method
+          aes.key = key
+        end
+      end
+    end
+    
+    class Encrypter < Processor
+      attr_reader :input, :output, :chunk_size
+      def initialize(key, input = nil, output = nil, opts = {})
+        super :encrypt, key
         @input, @output = input, output
         @chunk_size = opts[:chunk_size] || (1024 * 1024)
       end
@@ -102,18 +105,12 @@ module Rack
         advance! until done?
         finalize!
       end
-      def update(chunk)
-        aes.update chunk
-      end
-      def final
-        aes.final
-      end
       private
       def advance!
-        @output << update(@chunk)
+        @output << aes.update(@chunk)
       end
       def finalize!
-        @output << final
+        @output << aes.final
         @output.close
       end
       def done?
@@ -122,12 +119,21 @@ module Rack
       def next_chunk
         @chunk = input.read(chunk_size)
       end
-      def construct_aes(method, key)
-        OpenSSL::Cipher::Cipher.new('aes-256-cbc').tap do |aes|
-          aes.send method
-          aes.key = key
+    end
+    
+    class DecryptedBody < Processor
+      attr_reader :body
+      def initialize(key, body)
+        super :decrypt, key
+        @body = body
+      end
+      def each
+        body.each do |part|
+          yield aes.update(part)
         end
+        yield aes.final
       end
     end
+    
   end
 end
