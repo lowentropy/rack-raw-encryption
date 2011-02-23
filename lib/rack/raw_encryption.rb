@@ -12,8 +12,9 @@ module Rack
 
     def call(env)
       thread = replace_input!(env) if encrypted_upload?(env)
-      @app.call(env).tap do |(status, headers, body)|
-        decrypt!(env, body) if decrypted_download?(env)
+      @app.call(env).tap do |arr|
+        status, headers, body = arr
+        arr[-1] = decrypt!(env, body) if decrypted_download?(env)
         thread.join if thread
       end
     end
@@ -55,18 +56,27 @@ module Rack
     end
 
     def decrypt!(env, body)
-      key = encryption_key(env)
-      body.map! do |part|
-        input = StringIO.new part
-        output = StringIO.new
-        decryptor = Processor.new :decrypt, key, input, output
-        decryptor.run!
-        output.string
+      if key = encryption_key(env)
+        [].tap do |new_body|
+          decryptor = Processor.new :decrypt, key
+          body.each do |part|
+            new_body << decryptor.update(part)
+          end
+          new_body << decryptor.final
+        end
+      else
+        body
       end
     end
     
+    def get_key_from_env(env)
+      req = Rack::Request.new(env)
+      env['HTTP_X_ENCRYPTION_KEY'] ||
+      req.params['encryption_key']
+    end
+
     def encryption_key(env)
-      if key = env['HTTP_X_ENCRYPTION_KEY']
+      if key = get_key_from_env(env)
         Digest::SHA256.digest key
       end
     end
@@ -83,7 +93,7 @@ module Rack
     
     class Processor
       attr_reader :input, :output, :aes, :chunk_size
-      def initialize(method, key, input, output, opts = {})
+      def initialize(method, key, input = nil, output = nil, opts = {})
         @aes = construct_aes method, key
         @input, @output = input, output
         @chunk_size = opts[:chunk_size] || (1024 * 1024)
@@ -92,12 +102,18 @@ module Rack
         advance! until done?
         finalize!
       end
+      def update(chunk)
+        aes.update chunk
+      end
+      def final
+        aes.final
+      end
       private
       def advance!
-        @output << aes.update(@chunk)
+        @output << update(@chunk)
       end
       def finalize!
-        @output << aes.final
+        @output << final
         @output.close
       end
       def done?
